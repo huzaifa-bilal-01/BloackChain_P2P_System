@@ -1,256 +1,235 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bufio"
 	"fmt"
+	"math/rand"
+	"net"
+	"sync"
 	"time"
 )
 
-const _MINING_DIFFICULTY_ = 4
-
-type Transaction struct {
-	Data string
+// Node represents a peer in the P2P network
+type Node struct {
+	ID           int
+	Port         int
+	IP           string
+	Neighbors    []string
+	CurrentBlock Block
+	mu           sync.Mutex
 }
 
-type Block struct {
-	currentBlockHash string
-	prevBlockHash    string
-	timestamp        int64
-	nonce            int
-	merkleroot       string
-	Transactions     []Transaction
+// BootstrapNode represents the bootstrap node
+var BootstrapNode = Node{
+	ID:   0,
+	Port: 5000,
+	IP:   "127.0.0.1",
 }
 
-type MerkleNode struct {
-	hash  string
-	left  *MerkleNode
-	right *MerkleNode
+var nodeIDCounter = 1
+var portCounter = 6000
+
+// RegisterNode registers a new node with the bootstrap node
+func RegisterNode(node *Node) {
+	BootstrapNode.mu.Lock()
+	defer BootstrapNode.mu.Unlock()
+
+	// Assign a unique ID and port to the new node
+	node.ID = nodeIDCounter
+	nodeIDCounter++
+
+	node.Port = portCounter
+	portCounter++
+
+	// Update the BootstrapNode's Neighbors list
+	BootstrapNode.Neighbors = append(BootstrapNode.Neighbors, fmt.Sprintf("%s:%d", node.IP, node.Port))
 }
 
-// Creating a linkedList to implement BlockChain
-type BlockChainNode struct {
-	data *Block
-	next *BlockChainNode
-}
+func assigningNeighbor(node *Node) {
+	// Connect with a random subset of existing nodes
+	existingNodes := append([]string{}, BootstrapNode.Neighbors...)
+	rand.Shuffle(len(existingNodes), func(i, j int) {
+		existingNodes[i], existingNodes[j] = existingNodes[j], existingNodes[i]
+	})
 
-type BlockChain struct {
-	head *BlockChainNode
-}
-
-func (obj *BlockChain) addBlock(b *Block) {
-	newNode := &BlockChainNode{data: b, next: nil}
-	if obj.head == nil {
-		obj.head = newNode
-		return
-	}
-	currentNode := obj.head
-	for currentNode.next != nil {
-		currentNode = currentNode.next
-	}
-	currentNode.next = newNode
-}
-
-// Displaying the BlockChain
-func (obj *BlockChain) displayBlockChain() {
-	currentNode := obj.head
-	for currentNode != nil {
-		fmt.Printf("Block Hash: %s\n", currentNode.data.currentBlockHash)
-		currentNode = currentNode.next
-	}
-}
-
-// Calculating the hash of current Block
-func (block1 *Block) blockHashCalculation() string {
-	//Block header consist of prevBlockhash,nonce,timestamp,merkleroot and trasactions in that block
-	blockHeader := fmt.Sprintf("%s%d%d%s%s", block1.prevBlockHash, block1.timestamp, block1.nonce, block1.merkleroot, block1.Transactions)
-	hash_value := sha256.Sum256([]byte(blockHeader))
-	hash_string := hex.EncodeToString(hash_value[:])
-	return hash_string
-}
-
-// Calculating the hash of the data in merkle root
-func hashCalculation(data string) string {
-	hash_value := sha256.Sum256([]byte(data))
-	hash_string := hex.EncodeToString(hash_value[:])
-	return hash_string
-}
-
-// Merkle Root implementation
-func merkleRoot(data []Transaction) *MerkleNode {
-	//Calculating the hash of all the data and then appending in nodes of merkle tree it will be leaf nodes
-	var nodes []*MerkleNode
-	for _, val := range data {
-		hash_data := &MerkleNode{hash: hashCalculation(val.Data)}
-		nodes = append(nodes, hash_data)
-	}
-	//if there are more than 1 node than we can create merkle tree
-	for len(nodes) > 1 {
-		var level []*MerkleNode
-		//Merkle tree is also known as binary hash tree so we have iterated i to i+=2
-		for i := 0; i < len(nodes); i += 2 {
-			left_node := nodes[i]
-			right_node := left_node
-			//If there is right tree than right node will be this
-			if i+1 < len(nodes) {
-				right_node = nodes[i+1]
-			}
-			parent_node := &MerkleNode{hash: hashCalculation(left_node.hash + right_node.hash), left: left_node, right: right_node}
-			level = append(level, parent_node)
+	maxNeighbors := 5 // You can adjust the number of neighbors as needed
+	for _, potentialNeighbor := range existingNodes {
+		if potentialNeighbor != node.IP {
+			node.Neighbors = append(node.Neighbors, potentialNeighbor)
+			maxNeighbors--
 		}
-		nodes = level
+
+		if maxNeighbors == 0 {
+			break
+		}
 	}
-	return nodes[0]
 }
 
-// Creation of new Block
-func blockCreation(prevBlockHash string, trasactions []Transaction) *Block {
-	block := &Block{
-		prevBlockHash: prevBlockHash,
+// StartNode starts a new node as both a server and a client
+func StartNode(node *Node) {
+	node.CurrentBlock = Block{
+		prevBlockHash: blockchain.head.data.currentBlockHash,
 		timestamp:     time.Now().Unix(),
 		nonce:         0,
-		Transactions:  trasactions,
 	}
-
-	block.currentBlockHash = block.blockHashCalculation()
-	block.merkleroot = merkleRoot(trasactions).hash
-	mined := block.mineBlock()
-	if mined {
-		return block
-	} else {
-		fmt.Println("Block is not minned")
-	}
-	return block
-
+	go node.startServer()
+	go node.startClient()
 }
 
-func (b *Block) mineBlock() bool {
+// startServer starts the server for the node
+func (node *Node) startServer() {
+	listen, err := net.Listen("tcp", fmt.Sprintf(":%d", node.Port))
+	if err != nil {
+		fmt.Printf("Node %d: There was error starting server: %v\n", node.ID, err)
+		return
+	}
+	defer listen.Close()
+
 	for {
-		//Calculating the trailing zero in block hash by iterating over last number of zero's
-		for i := len(b.currentBlockHash) - 1; i >= len(b.currentBlockHash)-_MINING_DIFFICULTY_; i-- {
-			if b.currentBlockHash[i] != '0' {
-				b.nonce++
-				b.currentBlockHash = b.blockHashCalculation()
+		conn, err := listen.Accept()
+		if err != nil {
+			fmt.Printf("Node %d: There was error accepting connection: %v\n", node.ID, err)
+			continue
+		}
+
+		go node.handleClient(conn)
+	}
+}
+
+// handling the transaction receiveing from the client
+func (node *Node) handleClient(conn net.Conn) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	trx := []Transaction{}
+	for scanner.Scan() {
+		transactionData := scanner.Text()
+		fmt.Printf("Node %d: Received transaction from neighbor: %s\n", node.ID, transactionData)
+		trx = append(trx, Transaction{Data: transactionData})
+		// node.mu.Lock()
+		// node.Transactions = append(node.Transactions, Transaction{Data: transactionData})
+		// node.mu.Unlock()
+		// fmt.Printf("ID=%d, IP=%s, Port=%d, Neighbors=%v, Transactions=%v\n", node.ID, node.IP, node.Port, node.Neighbors, node.Transactions)
+	}
+	flood_arr := []Transaction{}
+	for _, upcoming_trx := range trx {
+		check := false
+		for _, exisiting_trx := range node.CurrentBlock.Transactions {
+			if exisiting_trx.Data == upcoming_trx.Data {
+				check = true
+				return
 			}
 		}
-		return true
-
+		if !check {
+			flood_arr = append(flood_arr, upcoming_trx)
+		}
+	}
+	node.floodingTrx(flood_arr)
+	if len(node.CurrentBlock.Transactions) >= 4 {
+		node.CurrentBlock.mineBlock()
 	}
 }
 
-// Checking the validity of block along with chain
-func (obj *BlockChain) validityCheck() bool {
-	currentNode := obj.head
-	for currentNode != nil && currentNode.next != nil {
-		currentBlock := currentNode.data
-		nextBlock := currentNode.next.data
+// startClient simulates the client functionality by periodically contacting neighbors
+func (node *Node) startClient() {
+	for {
+		node.mu.Lock()
+		neighbors := append([]string{}, node.Neighbors...)
+		node.mu.Unlock()
 
-		if currentBlock.currentBlockHash != nextBlock.prevBlockHash {
-			return false
+		for _, neighbor := range neighbors {
+			go node.contactNeighbor(neighbor)
 		}
 
-		if currentBlock.currentBlockHash != currentBlock.blockHashCalculation() && nextBlock.currentBlockHash != nextBlock.blockHashCalculation() {
-			return false
-		}
-
-		currentNode = currentNode.next
-	}
-	return true
-}
-
-// Changing the block
-func changeBlock(b *Block, transactions []Transaction) {
-	b.Transactions = transactions
-	b.merkleroot = merkleRoot(transactions).hash
-	b.currentBlockHash = b.blockHashCalculation()
-}
-
-// Displaying Block
-func (b *Block) String() string {
-	return fmt.Sprintf("Block:\n"+
-		"|  Previous Block Hash: %s\n"+
-		"|  Current Block Hash:  %s\n"+
-		"|  Timestamp:           %s\n"+
-		"|  Nonce:               %d\n"+
-		"|  Merkle Root:         %s\n"+
-		"|  Transactions:        %v\n",
-		b.prevBlockHash,
-		b.currentBlockHash,
-		time.Unix(b.timestamp, 0).Format("2006-01-02 15:04:05"),
-		b.nonce,
-		b.merkleroot,
-		b.Transactions,
-	)
-}
-
-// Displaying merkle tree
-func displayMerkleTree(root_node *MerkleNode, identation string) {
-	if root_node != nil {
-		fmt.Println(identation+"Hash_Value:", root_node.hash)
-		if root_node.left != nil {
-			displayMerkleTree(root_node.left, identation+"    ")
-		}
-		if root_node.right != nil {
-			displayMerkleTree(root_node.right, identation+"    ")
-		}
+		//time.Sleep(5 * time.Second) // Simulating periodic contact
 	}
 }
+
+// contactNeighbor simulates the client contacting a neighbor
+func (node *Node) contactNeighbor(neighbor string) {
+}
+
+// Function to broadcast transactions
+func (node *Node) floodingTrx(transactions []Transaction) {
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	node.CurrentBlock.Transactions = append(node.CurrentBlock.Transactions, transactions...)
+
+	//Check for the duplicated Transactions
+
+	for _, neighbor := range node.Neighbors {
+		go node.brodcastingToNeigborNodes(neighbor, node.CurrentBlock.Transactions)
+	}
+	node.CurrentBlock.merkleroot = merkleRoot(node.CurrentBlock.Transactions).hash
+}
+
+func (node *Node) brodcastingToNeigborNodes(neighbor string, transactions []Transaction) {
+
+	fmt.Printf("Nocde %d: Broadcasting transactions to neighbor %s\n", node.ID, neighbor)
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	time.Sleep(1 * time.Second)
+	conn, err := net.Dial("tcp", neighbor)
+	if err != nil {
+		fmt.Printf("Node %d: There was error connecting to neighbor: %v\n", node.ID, err)
+		return
+	}
+	defer conn.Close()
+
+	for _, trx := range transactions {
+		_, err := fmt.Fprintf(conn, "%s\n", trx.Data)
+		if err != nil {
+			fmt.Printf("Node %d: There was error sending transaction to neigbor: %v\n", node.ID, err)
+			return
+		}
+	}
+
+}
+
+// DisplayP2PNetwork prints the details of the P2P network
+func DisplayP2PNetwork(nodes []Node) {
+	fmt.Println("P2P Network:")
+	for i, node := range nodes {
+		fmt.Printf("Node %d: ID=%d, IP=%s, Port=%d, Neighbors=%v, Block=%v\n", i+1, node.ID, node.IP, node.Port, node.Neighbors, node.CurrentBlock)
+	}
+	fmt.Println("Bootstrap Node:", BootstrapNode)
+}
+
+var blockchain = BlockChain{}
 
 func main() {
-	transactions1 := []Transaction{
-		{Data: "Huzaifa"},
-		{Data: "Hamza"},
-		{Data: "Ahmed"},
-		{Data: "Daniyal"},
+	genesisBlock := Block{
+		prevBlockHash: "",
+		timestamp:     time.Now().Unix(),
+		nonce:         0,
+		merkleroot:    "",
+		Transactions:  []Transaction{},
 	}
 
-	transactions2 := []Transaction{
-		{Data: "frustrated"},
-		{Data: "happy"},
-		{Data: "mad"},
-		{Data: "sad"},
+	genesisBlock.currentBlockHash = genesisBlock.blockHashCalculation()
+	blockchain.addBlock(&genesisBlock)
+
+	// Example usage with 8 nodes
+	transactions := []Transaction{
+		{Data: "1500$ Sent"},
+		{Data: "1600$ Sent"},
+		{Data: "1700$ Sent"},
+		{Data: "1800$ Sent"},
 	}
+	nodes := make([]Node, 8)
 
-	changed_transactions := []Transaction{
-		{Data: "meowww"},
-		{Data: "woffff"},
-		{Data: "krrrrr"},
-		{Data: "shhhhh"},
+	for i := range nodes {
+		nodes[i].IP = "127.0.0.1"
+		RegisterNode(&nodes[i])
 	}
-
-	prevBlockHash := ""
-	block1 := blockCreation(prevBlockHash, transactions1)
-	block2 := blockCreation(block1.currentBlockHash, transactions2)
-	fmt.Println(block1)
-	fmt.Println(block2)
-
-	blockchain := BlockChain{}
-	blockchain.addBlock(block1)
-	blockchain.addBlock(block2)
-
-	fmt.Println("*****BLOCK CHAIN*****")
-	blockchain.displayBlockChain()
-
-	if blockchain.validityCheck() {
-		fmt.Println("VALID BLOCKS :)")
-	} else {
-		fmt.Println("The transaction in block has been tempred")
+	for i := range nodes {
+		assigningNeighbor(&nodes[i])
+		StartNode(&nodes[i])
 	}
+	nodes[4].floodingTrx(transactions)
+	// Display P2P network
+	time.Sleep(12 * time.Second)
+	DisplayP2PNetwork(nodes)
 
-	changeBlock(block1, changed_transactions)
-	fmt.Println(block1)
-
-	if blockchain.validityCheck() {
-		fmt.Println("VALID BLOCKS :)")
-	} else {
-		fmt.Println("The transaction in block has been tempred")
-	}
-
-	// fmt.Println("Block Header Hash is: ", block.currentBlockHash)
-
-	// root_node := block.merkleroot
-	// fmt.Println("Root node hash is:", root_node)
-	// fmt.Println("********MERKLE TREE********")
-	// displayMerkleTree(merkleRoot(transactions), "")
-
+	// Keep the main goroutine running
+	select {}
 }
