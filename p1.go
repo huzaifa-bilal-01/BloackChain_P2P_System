@@ -14,12 +14,12 @@ type Transaction struct {
 }
 
 type Block struct {
-	currentBlockHash string
-	prevBlockHash    string
-	timestamp        int64
-	nonce            int
-	merkleroot       string
-	Transactions     []Transaction
+	currentBlockHash  string
+	prevBlockHash     string
+	timestamp         int64
+	nonce             int
+	merkleroot        string
+	BlockTransactions []Transaction
 }
 
 type MerkleNode struct {
@@ -63,7 +63,7 @@ func (obj *BlockChain) displayBlockChain() {
 // Calculating the hash of current Block
 func (block1 *Block) blockHashCalculation() string {
 	//Block header consist of prevBlockhash,nonce,timestamp,merkleroot and trasactions in that block
-	blockHeader := fmt.Sprintf("%s%d%d%s%s", block1.prevBlockHash, block1.timestamp, block1.nonce, block1.merkleroot, block1.Transactions)
+	blockHeader := fmt.Sprintf("%s%d%d%s%s", block1.prevBlockHash, block1.timestamp, block1.nonce, block1.merkleroot, block1.BlockTransactions)
 	hash_value := sha256.Sum256([]byte(blockHeader))
 	hash_string := hex.EncodeToString(hash_value[:])
 	return hash_string
@@ -106,13 +106,12 @@ func merkleRoot(data []Transaction) *MerkleNode {
 // Creation of new Block
 func blockCreation(prevBlockHash string, trasactions []Transaction) *Block {
 	block := &Block{
-		prevBlockHash: prevBlockHash,
-		timestamp:     time.Now().Unix(),
-		nonce:         0,
-		Transactions:  trasactions,
+		prevBlockHash:     prevBlockHash,
+		timestamp:         time.Now().Unix(),
+		nonce:             0,
+		BlockTransactions: trasactions,
 	}
 
-	block.currentBlockHash = block.blockHashCalculation()
 	block.merkleroot = merkleRoot(trasactions).hash
 	mined := block.mineBlock()
 	if mined {
@@ -160,7 +159,7 @@ func (obj *BlockChain) validityCheck() bool {
 
 // Changing the block
 func changeBlock(b *Block, transactions []Transaction) {
-	b.Transactions = transactions
+	b.BlockTransactions = transactions
 	b.merkleroot = merkleRoot(transactions).hash
 	b.currentBlockHash = b.blockHashCalculation()
 }
@@ -179,7 +178,7 @@ func (b *Block) String() string {
 		time.Unix(b.timestamp, 0).Format("2006-01-02 15:04:05"),
 		b.nonce,
 		b.merkleroot,
-		b.Transactions,
+		b.BlockTransactions,
 	)
 }
 
@@ -195,62 +194,3 @@ func displayMerkleTree(root_node *MerkleNode, identation string) {
 		}
 	}
 }
-
-// func main() {
-// 	transactions1 := []Transaction{
-// 		{Data: "Huzaifa"},
-// 		{Data: "Hamza"},
-// 		{Data: "Ahmed"},
-// 		{Data: "Daniyal"},
-// 	}
-
-// 	transactions2 := []Transaction{
-// 		{Data: "frustrated"},
-// 		{Data: "happy"},
-// 		{Data: "mad"},
-// 		{Data: "sad"},
-// 	}
-
-// 	changed_transactions := []Transaction{
-// 		{Data: "meowww"},
-// 		{Data: "woffff"},
-// 		{Data: "krrrrr"},
-// 		{Data: "shhhhh"},
-// 	}
-
-// 	prevBlockHash := ""
-// 	block1 := blockCreation(prevBlockHash, transactions1)
-// 	block2 := blockCreation(block1.currentBlockHash, transactions2)
-// 	fmt.Println(block1)
-// 	fmt.Println(block2)
-
-// 	blockchain := BlockChain{}
-// 	blockchain.addBlock(block1)
-// 	blockchain.addBlock(block2)
-
-// 	fmt.Println("*****BLOCK CHAIN*****")
-// 	blockchain.displayBlockChain()
-
-// 	if blockchain.validityCheck() {
-// 		fmt.Println("VALID BLOCKS :)")
-// 	} else {
-// 		fmt.Println("The transaction in block has been tempred")
-// 	}
-
-// 	changeBlock(block1, changed_transactions)
-// 	fmt.Println(block1)
-
-// 	if blockchain.validityCheck() {
-// 		fmt.Println("VALID BLOCKS :)")
-// 	} else {
-// 		fmt.Println("The transaction in block has been tempred")
-// 	}
-
-// 	// fmt.Println("Block Header Hash is: ", block.currentBlockHash)
-
-// 	// root_node := block.merkleroot
-// 	// fmt.Println("Root node hash is:", root_node)
-// 	fmt.Println("********MERKLE TREE********")
-// 	displayMerkleTree(merkleRoot(block1.Transactions), "")
-
-// }
